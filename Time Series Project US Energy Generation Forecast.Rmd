@@ -1,0 +1,306 @@
+---
+title: "PSTAT174 Final Project"
+author: "Aaron Lee (3410388)"
+date: "2023-05-30"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Energy Generation Data
+
+```{r}
+electricity.csv <- read.table("electricity_data.csv", sep = ",", header = FALSE, skip = 1, nrows = 255)
+electricity <- ts(electricity.csv[, 2], start = c(2001, 1, 1), frequency=12)
+
+electricity1 = electricity[c(1: 243)]/100000
+electricity1_test = electricity[c(244: 255)]/100000
+```
+
+## Plotting the original data
+
+```{r}
+ts.plot(electricity1, main="Monthly Electricity Generation in all sector of US", ylab=expression(X[t]))
+ele_fit <- lm(electricity1 ~ as.numeric(1:length(electricity1))); abline(ele_fit, col="red")
+abline(h=mean(electricity1), col="blue")
+```
+
+* Not stationary; we can see that there is an upper trend; seasonality; No constant variance.
+
+```{r}
+hist(electricity1, main="Monthly Electricity Generation in all sector of US", xlab="Monthly electricity generation")
+acf(electricity1)
+```
+
+```{r}
+library(MASS)
+t <- 1:length(electricity1)
+bcTransform <- boxcox(electricity1 ~ t, plotit=TRUE)
+bcTransform$x[which(bcTransform$y == max(bcTransform$y))]
+```
+
+```{r}
+lambda = bcTransform$x[which(bcTransform$y == max(bcTransform$y))]
+electricity1.bc = (1/lambda)*(electricity1^lambda-1)
+electricity1.log = log(electricity1)
+electricity1.sqrt = sqrt(electricity1)
+
+op <- par(mfrow = c(2,2))
+ts.plot(electricity1,main = "Original data",ylab = expression(X[t])) 
+ts.plot(electricity1.bc,main = "Box-Cox tranformed data", ylab = expression(Y[t]))
+ts.plot(electricity1.log, main = "Log Transform")
+ts.plot(electricity1.sqrt, main = "Square Root Transform")
+par(op)
+```
+
+```{r}
+hist(electricity1.bc)
+```
+
+* Through the histogram, we choose box-cox transformation.
+
+### Produce decomposition of Box-Cox $U_t$
+
+```{r}
+library(ggplot2)
+#install.packages('ggfortify')
+library(ggfortify)
+
+y <- ts(as.ts(electricity1.bc), frequency = 12)
+decomp <- decompose(y)
+plot(decomp)
+```
+
+```{r}
+# Calculate the sample variance and plot the acf/pacf
+var(electricity1)
+var(electricity1.bc)
+```
+The variance increases after the transformation.
+
+```{r}
+op = par(mfrow = c(1,2))
+acf(electricity1.bc,lag.max = 40,main = "")
+pacf(electricity1.bc,lag.max = 40,main = "")
+title("Box-Cox Transformed Time Series", line = -1, outer=TRUE)
+par(op)
+```
+
+```{r}
+# Difference at lag  = 1 to remove trend component
+y1 = diff(electricity1.bc, 1)
+plot.ts(y1,main = "De-trended Time Series",ylab = expression(nabla~Y[t]))
+abline(h = 0,lty = 2)
+var(y1) # smaller that 7.342619e-5
+```
+
+```{r}
+# Difference at lag  = 12 (cycle determined by the ACF) to remove seasonal component
+y12 = diff(y1, 12)
+plot.ts(y12, main = "De-trended/seasonalized Time Series", ylab = expression(nabla^{12}~nabla~Y[t]))
+abline(h = 0,lty = 2)
+var(y12) # smaller than 7.342619e-5 and 6.753134e-5
+```
+
+```{r}
+acf(y12,lag.max = 40,main = "")
+title("ACF: First and Seasonally Differenced Time Series", line = -1, outer = TRUE)
+pacf(y12,lag.max = 40,main = "")
+title("PACF: First and Seasonally Differenced Time Series", line = -1, outer = TRUE)
+hist(y12, col="light blue", xlab="", main="histogram; ln(U_t) differenced at lags 12 & 1")
+```
+
+```{r}
+# Compare histograms of Box-Cox (Ut) to the normal curve, really similar.
+hist(y12, density=20,breaks=20, col="blue", xlab="", prob=TRUE)
+m<-mean(y12)
+std<- sqrt(var(y12))
+curve( dnorm(x,m,std), add=TRUE )
+```
+
+#### **Modeling the seasonal part** (P, D, Q): For this part, focus on the seasonal lags h = 1s, 2s, etc.
+
+* We applied one seasonal differencing so D = 1 at lag s = 12.
+* The ACF shows a strong peak at h = 1s and smaller peaks appearing at h = 2s.  A good choice for the MA part could be Q = 1 or Q = 2.
+* The PACF shows there is a peak at h = 1s.  A good choice for the AR part could be P = 1.
+
+#### **Modeling the non-seasonal part** (p , d, q): In this case focus on the within season lags, h = 1,. . . ,11.
+
+* We applied one differencing to remove the trend: d = 1.
+* A good choice for the MA part could be q = 0 or q = 1 respectively.
+* A good choice for the AR part could be p = 2
+
+#### Also, the model might be MA(33); SARIMA(2,1,0)(1,1,1)[12]; SARIMA(2,1,1)(1,1,1)[12]; SARIMA(2,1,0)(1,1,2)[12]; SARIMA(2,1,1)(1,1,2)[12]
+
+### Trying Models:
+
+#### SMA models tried: Q=1, 2, q=0,1. Model producing the lowest AICc:
+```{r}
+library(astsa)
+library(MuMIn)
+arima(electricity1.bc, order = c(0,1,1), seasonal = list(order = c(0,1,2), period = 12), method="ML")
+# Calculating AICc
+AICc(arima(electricity1.bc, order = c(0,1,1), seasonal = list(order = c(0,1,2), period = 12), method="ML"))
+```
+
+```{r}
+arima(electricity1.bc, order = c(0,1,0), seasonal = list(order = c(0,1,2), period = 12), method="ML")
+AICc(arima(electricity1.bc, order = c(0,1,0), seasonal = list(order = c(0,1,2), period = 12), method="ML"))
+```
+
+```{r}
+arima(electricity1.bc, order = c(0,1,1), seasonal = list(order = c(0,1,1), period = 12), method="ML")
+AICc(arima(electricity1.bc, order = c(0,1,1), seasonal = list(order = c(0,1,1), period = 12), method="ML"))
+```
+
+```{r}
+arima(electricity1.bc, order = c(0,1,0), seasonal = list(order = c(0,1,1), period = 12), method="ML")
+AICc(arima(electricity1.bc, order = c(0,1,0), seasonal = list(order = c(0,1,2), period = 12), method="ML"))
+```
+
+### SAR
+```{r}
+arima(electricity1.bc, order = c(2,1,0), seasonal = list(order = c(1,1,0), period = 12), method="ML")
+AICc(arima(electricity1.bc, order = c(2,1,0), seasonal = list(order = c(1,1,0), period = 12), method="ML"))
+```
+
+### SARIMA(2,1,1)(1,1,2)_s=12
+```{r}
+arima(electricity1.bc, order = c(2,1,1), seasonal = list(order = c(1,1,2), period = 12), method="ML")
+AICc(arima(electricity1.bc, order = c(2,1,1), seasonal = list(order = c(1,1,2), period = 12), method="ML"))
+```
+
+### Best fit model
+```{r}
+arima(electricity1.bc, order = c(2,1,1), seasonal = list(order = c(1,1,2), period = 12), fixed = c(NA,0,NA,NA,NA,NA),method="ML")
+AICc(arima(electricity1.bc, order = c(2,1,1), seasonal = list(order = c(1,1,2), period = 12), fixed = c(NA,0,NA,NA,NA,NA),method="ML"))
+```
+
+### MA(33) AICc is not smaller than -2102.679
+```{r}
+arima(electricity1.bc, order = c(0,0,33), seasonal = list(order = c(0,0,0), period = 12),method="ML")
+AICc(arima(electricity1.bc, order = c(0,0,33), seasonal = list(order = c(0,0,0), period = 12),method="ML"))
+```
+
+```{r}
+arima(electricity1.bc, order = c(2,1,1), seasonal = list(order = c(1,1,1), period = 12),method="ML")
+AICc(arima(electricity1.bc, order = c(2,1,1), seasonal = list(order = c(1,1,1), period = 12),method="ML"))
+```
+
+### second less AICc
+```{r}
+arima(electricity1.bc, order = c(2,1,1), seasonal = list(order = c(1,1,1), period = 12), fixed = c(NA,0,NA,NA,NA),method="ML")
+AICc(arima(electricity1.bc, order = c(2,1,1), seasonal = list(order = c(1,1,1), period = 12), fixed = c(NA,0,NA,NA,NA),method="ML"))
+```
+* not invertible, because 1.0001 is bigger than 1
+
+
+### Diagnostic checking
+```{r}
+#fit <- arima(electricity1.bc, order=c(2,1,1), seasonal = list(order = c(1,1,2), period = 12), method="ML")
+fit <- arima(electricity1.bc, order = c(2,1,1), seasonal = list(order = c(1,1,2), period = 12), fixed = c(NA,0,NA,NA,NA,NA),method="ML")
+res <- residuals(fit)
+hist(res,density=20,breaks=20, col="blue", xlab="", prob=TRUE)
+m <- mean(res)
+std <- sqrt(var(res))
+curve( dnorm(x,m,std), add=TRUE )
+plot.ts(res)
+fitt <- lm(res~as.numeric(1:length(res))); abline(fitt, col="red") 
+abline(h=mean(res), col="blue")
+```
+
+```{r}
+qqnorm(res,main= "Normal Q-Q Plot for Model SARIMA(2,1,1)(1,1,2)_[12]")
+qqline(res,col="blue")
+```
+
+```{r}
+acf(res, lag.max=40)
+pacf(res, lag.max=40)
+```
+
+```{r}
+fit.i <- sarima(xdata=electricity1, p=2, d=1, q=1, P=1, D=1, Q=2, S=12)
+```
+
+
+```{r}
+# p-value should be bigger that 0.05
+shapiro.test(res) # p-value should be bigger that 0.05
+Box.test(res, lag = 16, type = c("Box-Pierce"), fitdf = 3)
+Box.test(res, lag = 16, type = c("Ljung-Box"), fitdf = 3)
+Box.test(res^2, lag = 16, type = c("Ljung-Box"), fitdf = 0)
+```
+All p-value is larger than 0.05.
+
+```{r}
+acf(res^2, lag.max=40) # do not need this
+ar(res, aic = TRUE,  order.max = NULL, method = c("yule-walker"))
+```
+
+Fitted residual to AR(0), White noise
+Pass Diagnostic checking. 
+Ready to be used for forecasting.
+
+```{r}
+library(forecast)
+pred.tr <- sarima.for(electricity1.bc,n.ahead = 12,p=2,d=1,q=1,P=1,D=1,Q=2, S=12)
+#sarima.for(electricity1.bc,n.ahead = 12,p=2,d=1,q=1,P=1,D=1,Q=2, S=12)
+points(length(electricity1) + 1:length(electricity1_test),pred.tr$pred, col="blue",pch = 19)
+
+```
+
+```{r}
+#pred.orig <- InvBoxCox(pred.tr$pred, lambda)
+#sarima.for(electricity1,n.ahead = 12,p=2,d=1,q=1,P=1,D=1,Q=2, S=12)
+#ts.plot(electricity1, xlim=c(1,length(electricity1)+12))
+#points(length(electricity1) + 1:length(electricity1_test),electricity1_test, col="blue",pch = 19)
+```
+
+
+```{r}
+# arima(electricity1.bc, order = c(2,1,1), seasonal = list(order = c(1,1,2), period = 12), fixed = c(NA,0,NA,NA,NA,NA),method="ML")
+
+# Forecasting using model A:
+fit.A <- arima(electricity1.bc, order = c(2,1,1), seasonal = list(order = c(1,1,2), period = 12), fixed = c(NA,0,NA,NA,NA,NA),method="ML")
+forecast(fit.A) 
+
+# To produce graph with 12 forecasts on transformed data:
+pred.tr1 <- predict(fit.A, n.ahead = 12)
+U.tr = pred.tr1$pred + 2*pred.tr1$se # upper bound of the prediction interval
+L.tr = pred.tr1$pred - 2*pred.tr1$se # lower bound
+plot.ts(electricity1.bc, xlim=c(1,length(electricity1.bc)+12), ylim = c(min(electricity1.bc), max(U.tr)))
+lines(U.tr, col="blue",lty="dashed")
+lines(L.tr, col="blue",lty="dashed")
+points((length(electricity1.bc)+1):(length(electricity1.bc)+12), pred.tr1$pred, col="red",pch = 19)
+```
+```{r}
+# To produce graph with forecasts on original data:
+pred.orig <- InvBoxCox(pred.tr1$pred, lambda)
+U= InvBoxCox(U.tr, lambda)
+L= InvBoxCox(L.tr, lambda)
+plot.ts(electricity1, xlim=c(1,length(electricity1)+12), ylim = c(min(electricity1),max(U)))
+lines(U, col="blue", lty="dashed")
+lines(L, col="blue", lty="dashed")
+points((length(electricity1)+1):(length(electricity1)+12), pred.orig, col="red",pch = 19)
+
+# To zoom the graph, starting from entry 200
+ts.plot(electricity1, xlim = c(200,length(electricity1)+12), ylim = c(min(electricity1),max(U)))
+lines(U, col="blue", lty="dashed")
+lines(L, col="blue", lty="dashed")
+points((length(electricity1)+1):(length(electricity1)+12), pred.orig, col="red")
+```
+```{r}
+# To plot zoomed forecasts and true values (in electricity):
+electricity_true <- electricity[1:255]/100000
+plot.ts(electricity_true, xlim = c(200,length(electricity1)+12), ylim = c(2.7,max(U)), col="red")
+lines(U, col="blue", lty="dashed")
+lines(L, col="blue", lty="dashed")
+points((length(electricity1)+1):(length(electricity1)+12), pred.orig, col="green")
+points((length(electricity1)+1):(length(electricity1)+12), pred.orig, col="black")
+```
+
+
+
